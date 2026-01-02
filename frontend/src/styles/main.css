@@ -90,6 +90,25 @@ body {
   color: #0096FF;
 }
 
+.backend-status {
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid;
+}
+
+.backend-status.running {
+  border-color: #00ff00;
+  color: #00ff00;
+}
+
+.backend-status.stopped {
+  border-color: #ff6600;
+  color: #ff6600;
+}
+
 .main-area {
   flex: 1;
   display: flex;

@@ -3,6 +3,7 @@ import { WebSocketClient } from '../utils/websocketClient';
 import { AudioProcessorUtil, playAudioFromBase64 } from '../utils/audioProcessor';
 import { WaveAnimation } from './WaveAnimation';
 import { CommandHistory } from './CommandHistory';
+import { electronAPI, isDesktopApp, DesktopAudioProcessor } from '../utils/electronAPI';
 
 interface CommandHistoryItem {
   id: string;
@@ -23,19 +24,47 @@ export const JarvisAssistant: React.FC = () => {
   const [status, setStatus] = useState('');
   const [history, setHistory] = useState<CommandHistoryItem[]>([]);
   const [error, setError] = useState('');
+  const [isDesktop, setIsDesktop] = useState(false);
+  const [backendStatus, setBackendStatus] = useState(false);
 
   const wsClientRef = useRef<WebSocketClient | null>(null);
   const audioProcessorRef = useRef<AudioProcessorUtil | null>(null);
+  const desktopAudioProcessorRef = useRef<DesktopAudioProcessor | null>(null);
   const volumeIntervalRef = useRef<number>();
   const recordingTimeoutRef = useRef<number>();
 
   useEffect(() => {
+    // Проверяем, запущено ли приложение в Electron
+    setIsDesktop(isDesktopApp());
+    
     initializeWebSocket();
     
     return () => {
       cleanup();
     };
   }, []);
+
+  useEffect(() => {
+    // Если это десктопное приложение, проверяем статус backend
+    if (isDesktop) {
+      checkBackendStatus();
+    }
+  }, [isDesktop]);
+
+  const checkBackendStatus = async () => {
+    try {
+      const status = await electronAPI.getBackendStatus();
+      setBackendStatus(status.running);
+      if (!status.running) {
+        console.log('Backend not running, starting...');
+        await electronAPI.startBackend();
+        // Даем время backend запуститься
+        setTimeout(checkBackendStatus, 3000);
+      }
+    } catch (error) {
+      console.error('Failed to check backend status:', error);
+    }
+  };
 
   const initializeWebSocket = async () => {
     try {
@@ -101,9 +130,18 @@ export const JarvisAssistant: React.FC = () => {
     try {
       setError('');
       
-      if (!audioProcessorRef.current) {
-        audioProcessorRef.current = new AudioProcessorUtil();
-        await audioProcessorRef.current.initialize();
+      if (isDesktop) {
+        // Используем улучшенный аудио процессор для десктопа
+        if (!desktopAudioProcessorRef.current) {
+          desktopAudioProcessorRef.current = new DesktopAudioProcessor();
+          await desktopAudioProcessorRef.current.initialize();
+        }
+      } else {
+        // Используем стандартный аудио процессор для браузера
+        if (!audioProcessorRef.current) {
+          audioProcessorRef.current = new AudioProcessorUtil();
+          await audioProcessorRef.current.initialize();
+        }
       }
 
       setIsListening(true);
@@ -112,13 +150,20 @@ export const JarvisAssistant: React.FC = () => {
       setStatus('Слушаю...');
 
       volumeIntervalRef.current = window.setInterval(() => {
-        if (audioProcessorRef.current) {
+        if (isDesktop && desktopAudioProcessorRef.current) {
+          const vol = desktopAudioProcessorRef.current.getVolume?.() || 0;
+          setVolume(vol);
+        } else if (audioProcessorRef.current) {
           const vol = audioProcessorRef.current.getVolume();
           setVolume(vol);
         }
       }, 50);
 
-      audioProcessorRef.current.startRecording();
+      if (isDesktop && desktopAudioProcessorRef.current) {
+        await desktopAudioProcessorRef.current.startRecording();
+      } else if (audioProcessorRef.current) {
+        audioProcessorRef.current.startRecording();
+      }
 
       recordingTimeoutRef.current = window.setTimeout(async () => {
         await stopListening();
@@ -146,7 +191,15 @@ export const JarvisAssistant: React.FC = () => {
       setStatus('Обработка...');
       setIsProcessing(true);
 
-      if (audioProcessorRef.current && audioProcessorRef.current.isRecording()) {
+      if (isDesktop && desktopAudioProcessorRef.current && desktopAudioProcessorRef.current.isRecording()) {
+        const audioBlob = await desktopAudioProcessorRef.current.stopRecording();
+        
+        const arrayBuffer = await audioBlob.arrayBuffer();
+        
+        if (wsClientRef.current && wsClientRef.current.isConnected()) {
+          wsClientRef.current.sendAudio(arrayBuffer);
+        }
+      } else if (audioProcessorRef.current && audioProcessorRef.current.isRecording()) {
         const audioBlob = await audioProcessorRef.current.stopRecording();
         
         const arrayBuffer = await audioBlob.arrayBuffer();
@@ -168,6 +221,10 @@ export const JarvisAssistant: React.FC = () => {
 
     if (recordingTimeoutRef.current) {
       clearTimeout(recordingTimeoutRef.current);
+    }
+
+    if (desktopAudioProcessorRef.current) {
+      await desktopAudioProcessorRef.current.cleanup();
     }
 
     if (audioProcessorRef.current) {
@@ -205,6 +262,11 @@ export const JarvisAssistant: React.FC = () => {
         <div className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
           {isConnected ? '● Подключено' : '○ Отключено'}
         </div>
+        {isDesktop && (
+          <div className={`backend-status ${backendStatus ? 'running' : 'stopped'}`}>
+            {backendStatus ? '● Backend активен' : '○ Backend остановлен'}
+          </div>
+        )}
         {status && <div className="status-message">{status}</div>}
       </div>
 
@@ -260,7 +322,7 @@ export const JarvisAssistant: React.FC = () => {
                 <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
                 <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
               </svg>
-              <span>Нажмите чтобы говорить</span>
+              <span>{isDesktop ? 'Нажмите чтобы говорить (Desktop)' : 'Нажмите чтобы говорить'}</span>
             </button>
           )}
 
